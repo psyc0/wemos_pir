@@ -1,14 +1,13 @@
-
 #include <Arduino.h>
 #include <Scheduler.h>
 #include <ESP8266WiFi.h>
 #include <PubSubClient.h>
+#include <ArduinoOTA.h>
 
 int dim1_gpio = 4;
 int pir_gpio = 5;
 int calibrationTime = 30;
 
-//from esp8266_mix
 const char* ssid = "";
 const char* password = "";
 const char* mqtt_server = "";
@@ -19,8 +18,8 @@ long lastMsg = 0;
 char msg[50];
 int value = 0;
 const char* outTopic = "/room/kitchen/wemos1/out";
-const char* inTopic = "/room/kitchen/wemos1/in";
-
+const char* topic_dim = "/room/kitchen/wemos1/dim";
+const char* topic_timer = "/room/kitchen/wemos1/timer";
 
 struct stats {
   int timer;
@@ -30,19 +29,35 @@ struct stats {
   int dim_speed;
   bool light;
 };
-stats settings = { 0, false, 0 ,0 ,1, false };
+stats settings = { 0, false, 0 ,0 ,3, false };
 
 void callback(char* topic, byte* payload, unsigned int length) {
+  char mqttIn;
   Serial.print("Message arrived [");
   Serial.print(topic);
   Serial.print("] ");
-  for (int i = 0; i < length; i++) {
-    Serial.print((char)payload[i]);
-  }
-  Serial.println();
+  
+  char* json;
+  json = (char*) malloc(length + 1);
+  memcpy(json, payload, length);
+  json[length] = '\0';
+  int value = atoi( json );
+  free(json);
+  if(strcmp(topic, "/room/kitchen/wemos1/dim") == 0) {
+    if(0 <= value <= 100) {
+      settings.n_dim = value * 10;
+      Serial.println("dimming to ");
+      Serial.print(value * 10);
+    }    
+  } else if (strcmp(topic, "/room/kitchen/wemos1/timer") == 0) {
+    if(0 <= value <= 240) {
+      settings.timer = value*60*1000;
+      Serial.println("timer set to");
+      Serial.print(value*60*1000);
+    }
+  } else { Serial.println("No valid topic"); }
 }
 
-//Begin!
 class Timer : public Task {
 protected:
     void loop() {
@@ -141,6 +156,41 @@ private:
     int duty;
 } dimmer1_task;
 
+class OTA : public Task {
+protected:
+    void setup() {
+      //10 sec initial delay to let mqtt connect to wifi
+      delay(10000);
+      while (WiFi.status() != WL_CONNECTED) {
+        delay(1000);
+      }
+      ArduinoOTA.setHostname("Kitchen_wemos_1");
+      ArduinoOTA.onStart([]() {
+        Serial.println("Arduino OTA Start");
+      });
+      ArduinoOTA.onEnd([]() {
+        Serial.println("Arduino OTA End");
+      });
+      ArduinoOTA.onProgress([](unsigned int progress, unsigned int total) {
+        Serial.printf("Progress: %u%%\r", (progress / (total / 100)));
+      });
+      ArduinoOTA.onError([](ota_error_t error) {
+        Serial.printf("Error[%u]: ", error);
+        if (error == OTA_AUTH_ERROR) Serial.println("Auth Failed");
+        else if (error == OTA_BEGIN_ERROR) Serial.println("Begin Failed");
+        else if (error == OTA_CONNECT_ERROR) Serial.println("Connect Failed");
+        else if (error == OTA_RECEIVE_ERROR) Serial.println("Receive Failed");
+        else if (error == OTA_END_ERROR) Serial.println("End Failed");
+      });
+      ArduinoOTA.begin();
+      Serial.println("OTA Ready!");
+
+    }
+    void loop(){
+      ArduinoOTA.handle();
+    }
+} ota_task;
+
 class MQTT : public Task {
 public:
 
@@ -150,7 +200,6 @@ void setup_wifi() {
   Serial.println();
   Serial.print("Connecting to ");
   Serial.println(ssid);
-
   WiFi.begin(ssid, password);
 
   while (WiFi.status() != WL_CONNECTED) {
@@ -165,18 +214,17 @@ void setup_wifi() {
 }
 
 void reconnect() {
-  // Loop until we're reconnected
   while (!client.connected()) {
     Serial.print("Attempting MQTT connection...");
-    // Attempt to connect
     if (client.connect("ESP8266Client")) {
       Serial.println("connected");
-      client.subscribe(inTopic);
+      client.subscribe(topic_timer);
+      client.subscribe(topic_dim);
+      
     } else {
       Serial.print("failed, rc=");
       Serial.print(client.state());
       Serial.println(" try again in 5 seconds");
-      // Wait 5 seconds before retrying
       for(int i = 0; i<5000; i++){
         delay(1);
       }
@@ -205,6 +253,7 @@ void setup() {
     Scheduler.start(&dimmer1_task);
     Scheduler.start(&mqtt_task);
     Scheduler.start(&detector_task);
+    Scheduler.start(&ota_task);
 
     Scheduler.begin();
 }
