@@ -3,6 +3,7 @@
 #include <ESP8266WiFi.h>
 #include <PubSubClient.h>
 #include <ArduinoOTA.h>
+#include <math.h>
 
 int dim1_gpio = 4;
 int pir_gpio = 5;
@@ -17,9 +18,9 @@ PubSubClient client(espClient);
 long lastMsg = 0;
 char msg[50];
 int value = 0;
-const char* outTopic = "/room/kitchen/wemos1/out";
-const char* topic_dim = "/room/kitchen/wemos1/dim";
-const char* topic_timer = "/room/kitchen/wemos1/timer";
+const char* outTopic = "room/kitchen/wemos1/out";
+const char* topic_dim = "room/kitchen/wemos1/dim";
+const char* topic_timer = "room/kitchen/wemos1/timer";
 
 struct stats {
   int timer;
@@ -29,7 +30,7 @@ struct stats {
   int dim_speed;
   bool light;
 };
-stats settings = { 0, false, 0 ,0 ,3, false };
+stats settings = { 0, false, 0 ,0 ,4, false };
 
 void callback(char* topic, byte* payload, unsigned int length) {
   char mqttIn;
@@ -43,13 +44,13 @@ void callback(char* topic, byte* payload, unsigned int length) {
   json[length] = '\0';
   int value = atoi( json );
   free(json);
-  if(strcmp(topic, "/room/kitchen/wemos1/dim") == 0) {
+  if(strcmp(topic, "room/kitchen/wemos1/dim") == 0) {
     if(0 <= value <= 100) {
-      settings.n_dim = value * 10;
+      settings.n_dim = value;
       Serial.println("dimming to ");
-      Serial.print(value * 10);
+      Serial.print(value);
     }    
-  } else if (strcmp(topic, "/room/kitchen/wemos1/timer") == 0) {
+  } else if (strcmp(topic, "room/kitchen/wemos1/timer") == 0) {
     if(0 <= value <= 240) {
       settings.timer = value*60*1000;
       Serial.println("timer set to");
@@ -146,7 +147,11 @@ protected:
             } else if(settings.n_dim < settings.c_dim) {
               settings.c_dim -= 1;
             }
-          analogWrite(dim1_gpio, settings.c_dim);
+          //add logaritmic function to dim smoothly
+          float num = pow(50,(float(settings.c_dim)/float(100))-1)-float(0.020);
+          int dim = static_cast<int>(num*1000);
+          Serial.println(dim);
+          analogWrite(dim1_gpio, dim);
           }
         //}
     }
@@ -184,11 +189,18 @@ protected:
       });
       ArduinoOTA.begin();
       Serial.println("OTA Ready!");
+      started_loop = true;
 
     }
     void loop(){
       ArduinoOTA.handle();
+      if(started_loop){
+        Serial.println("ArduinoOTA.handle started");
+        started_loop = false;
+      }
     }
+private:
+    bool started_loop;
 } ota_task;
 
 class MQTT : public Task {
